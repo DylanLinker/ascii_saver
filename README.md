@@ -11,5 +11,3 @@ ascii saver is a simple tool to create highly configurable ascii style screen sa
 ```
 python -m ascii_saver.launcher
 ```
-
-
