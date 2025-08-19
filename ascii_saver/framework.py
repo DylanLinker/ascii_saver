@@ -1,4 +1,3 @@
-# screen_saver/framework.py
 from __future__ import annotations
 
 import sys as _sys
@@ -20,8 +19,6 @@ import pkgutil
 import importlib
 import ascii_saver.effects
 
-# =================== Config Defaults ===================
-
 DEFAULT_CHARS: NDArray[np.str_] = np.array(
     list("@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/|?-_+~<>i!lI;:,\"^`'. "),
     dtype="<U1",
@@ -33,12 +30,10 @@ DEFAULT_FPS: int = 30
 DEFAULT_MIN_SHOW: float = 0.01
 DEFAULT_GAMMA: float = 1.6
 
-# =================== Small Utilities ===================
 
-
-def _hex_to_rgb(s: str) -> tuple[int, int, int]:
-    s = s.lstrip("#")
-    return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+def _hex_to_rgb(hex_code: str) -> tuple[int, int, int]:
+    hex_code = hex_code.lstrip("#")
+    return (int(hex_code[0:2], 16), int(hex_code[2:4], 16), int(hex_code[4:6], 16))
 
 
 def make_palette256(stops: Sequence[str]) -> NDArray[np.uint8]:
@@ -50,8 +45,8 @@ def make_palette256(stops: Sequence[str]) -> NDArray[np.uint8]:
     t = np.linspace(0, 1, 256, dtype=np.float32)
     idx = t * (len(rgb) - 1)
     k = np.minimum(idx.astype(np.int32), len(rgb) - 2)
-    u = idx - k.astype(np.float32)
-    out = rgb[k] * (1.0 - u)[:, None] + rgb[k + 1] * u[:, None]
+    frac_weight = idx - k.astype(np.float32)
+    out = rgb[k] * (1.0 - frac_weight)[:, None] + rgb[k + 1] * frac_weight[:, None]
     return out.astype(np.uint8)
 
 
@@ -62,9 +57,9 @@ def find_font_path(family: str) -> Optional[str]:
         r"C:\Windows\Fonts\consola.ttf",
         r"C:\Windows\Fonts\Consolas.ttf",
     ]
-    for p in candidates:
-        if os.path.isfile(p):
-            return p
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
     return None
 
 
@@ -85,12 +80,11 @@ def _text_bbox(
     font: ImageFont.FreeTypeFont | ImageFont.ImageFont, ch: str
 ) -> tuple[int, int]:
     tmp = Image.new("L", (1, 1), 0)
-    drw = ImageDraw.Draw(tmp)
-    left, top, right, bottom = drw.textbbox((0, 0), ch, font=font)
+    draw = ImageDraw.Draw(tmp)
+    left, top, right, bottom = draw.textbbox((0, 0), ch, font=font)
     w = max(1, int(right - left))
     h = max(1, int(bottom - top))
     return w, h
-
 
 
 def _measure_cell(
@@ -100,10 +94,11 @@ def _measure_cell(
     max_h = 1
     for ch in chars:
         w, h = _text_bbox(font, ch or " ")
-        if w > max_w: max_w = w
-        if h > max_h: max_h = h
+        if w > max_w:
+            max_w = w
+        if h > max_h:
+            max_h = h
     return max_w, max_h
-
 
 
 def build_colorized_atlas(
@@ -113,32 +108,28 @@ def build_colorized_atlas(
     oversample: int,
     palette256: NDArray[np.uint8],
 ) -> tuple[Image.Image, int, int, int, int]:
-    base = _load_font(font_family, size_pt)
-    hi = _load_font(font_family, max(1, size_pt * oversample))
+    base_font = _load_font(font_family, size_pt)
+    hi_res_font = _load_font(font_family, max(1, size_pt * oversample))
 
-    base_w, base_h = _measure_cell(base, chars)
-    atlas_w_cell, atlas_h = _measure_cell(hi, chars)
+    base_w, base_h = _measure_cell(base_font, chars)
+    atlas_cell_w, atlas_h = _measure_cell(hi_res_font, chars)
 
-    atlas = Image.new("RGBA", (atlas_w_cell * len(chars), atlas_h), (0, 0, 0, 0))
+    atlas = Image.new("RGBA", (atlas_cell_w * len(chars), atlas_h), (0, 0, 0, 0))
 
-    # char[0] reserved for space (transparent)
-    gmax = max(1, len(chars) - 2)
+    glyph_range = max(1, len(chars) - 2)
     for i, ch in enumerate(chars):
         if i == 0:
             continue
         rank = i - 1
-        pal_u8 = int(round(255 * (1.0 - rank / gmax)))
-        r, g, b = map(int, palette256[pal_u8])
-        glyph_L = Image.new("L", (atlas_w_cell, atlas_h), 0)
-        ImageDraw.Draw(glyph_L).text((0, 0), ch, fill=255, font=hi)
-        tile = Image.new("RGBA", (atlas_w_cell, atlas_h), (r, g, b, 0))
-        tile.putalpha(glyph_L)
-        atlas.paste(tile, (i * atlas_w_cell, 0), tile)
+        palette_index = int(round(255 * (1.0 - rank / glyph_range)))
+        r, g, b = map(int, palette256[palette_index])
+        glyph_mask = Image.new("L", (atlas_cell_w, atlas_h), 0)
+        ImageDraw.Draw(glyph_mask).text((0, 0), ch, fill=255, font=hi_res_font)
+        tile = Image.new("RGBA", (atlas_cell_w, atlas_h), (r, g, b, 0))
+        tile.putalpha(glyph_mask)
+        atlas.paste(tile, (i * atlas_cell_w, 0), tile)
 
-    return atlas, base_w, base_h, atlas_w_cell, atlas_h
-
-
-# =================== App/Renderer Core ===================
+    return atlas, base_w, base_h, atlas_cell_w, atlas_h
 
 
 @dataclass(frozen=True)
@@ -189,9 +180,6 @@ class GLRenderer:
         return self._atlas
 
 
-# =================== Base Effect API ===================
-
-
 class Effect:
     NAME: str = "base"
     CONFIG: dict[str, Any] = {}
@@ -202,13 +190,10 @@ class Effect:
         for k, v in merged.items():
             setattr(self, k, v)
 
-    # --- NEW: shader API ---
     def shader_sources(self) -> tuple[str, str]:
-        """Return (vert_src, frag_src). Override in your effect to swap shaders."""
         return (VERT_SRC, FRAG_GLYPH_AGE)
 
     def build_program(self, vert_src: str | None = None, frag_src: str | None = None) -> "mgl.Program":
-        """Compile/link a program and bind common glyph uniforms."""
         v, f = self.shader_sources()
         v = vert_src or v
         f = frag_src or f
@@ -218,20 +203,16 @@ class Effect:
         return prog
 
     def on_program_link(self, prog: "mgl.Program") -> None:
-        """Hook for effect-specific uniform defaults after link."""
         pass
 
-    def init(self) -> None:  # pragma: no cover - interface
+    def init(self) -> None:
         raise NotImplementedError
 
-    def update(self, dt: float) -> None:  # pragma: no cover - interface
+    def update(self, dt: float) -> None:
         raise NotImplementedError
 
-    def render(self) -> None:  # pragma: no cover - interface
+    def render(self) -> None:
         raise NotImplementedError
-
-
-# =================== Shared Shaders ===================
 
 VERT_SRC: str = """
 #version 330
@@ -409,9 +390,6 @@ class App:
             print(s.getvalue())
         pg.quit()
 
-
-# -------- Effect Registry --------
-
 _EFFECTS: Dict[str, Type[Effect]] = {}
 
 
@@ -429,14 +407,9 @@ def get_effect(name: str) -> Optional[Type[Effect]]:
 def list_effects() -> list[str]:
     return sorted(_EFFECTS.keys())
 
-
-# -------- CLI --------
-
-
 def main() -> None:
     _sys.modules.setdefault("screen_saver.framework", _sys.modules[__name__])
 
-    # Import effects before argparse (dynamic registry)
     for _, modname, _ in pkgutil.iter_modules(ascii_saver.effects.__path__):
         importlib.import_module(f"ascii_saver.effects.{modname}")
 
@@ -471,7 +444,7 @@ def main() -> None:
                 raise SystemExit(f"Invalid --set {item}, must be KEY=VALUE")
             k, v = item.split("=", 1)
             try:
-                v = eval(v, {}, {})  # interpret numbers/bools
+                v = eval(v, {}, {})
             except Exception:
                 pass
             cfg_overrides[k] = v
